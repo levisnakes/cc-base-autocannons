@@ -94,7 +94,11 @@ textutils = { serialize = ser, unserialize = function(s) local f = load("return 
 local function lerp(a, b, f) return a + (b - a) * f end
 local players = {}
 local function P(name, fn) players[name] = { name = name, fn = fn } end
-P("levisnakes", function(t) return 0, 64, 0 end)
+P("levisnakes", function(t)
+  -- track test: walk a circle (about 4.3 blocks/s) for cm0 to follow
+  if TRACK and t > 16 then return 10 * math.cos(0.43 * t), 64, 10 * math.sin(0.43 * t) end
+  return 0, 64, 0
+end)
 P("Bob", function(t)
   if FRIEND and t >= 40 then local x, y, z = players.Mechanoo.fn(t) return x + 2, y, z + 1 end
   return 20, 64, 40
@@ -140,8 +144,17 @@ local function segDist(ax, ay, az, bx, by, bz, px, py, pz)
   return math.sqrt(cx * cx + cy * cy + cz * cz)
 end
 
+-- cm0's per-tick yaw steps while following levisnakes in the track test
+yawSteps, aimErrs = {}, {}
+local lastYaw
 local function tick()
   CLOCK = CLOCK + 0.05
+  if TRACK and CLOCK > 22 then
+    local m = mounts.cm0
+    if lastYaw then yawSteps[#yawSteps + 1] = (m.yaw - lastYaw + 180) % 360 - 180 end
+    aimErrs[#aimErrs + 1] = aimAt("cm0", "levisnakes")
+  end
+  lastYaw = mounts.cm0.yaw
   for name, m in pairs(mounts) do
     if m.cc and m.asm then
       local dy = (m.ty - m.yaw + 180) % 360 - 180
@@ -235,7 +248,7 @@ end
 local keys = { { 20, "a" } }
 -- track test on, then armed too: must aim at friends but never fire
 if TRACK then keys = { { 15, "k" }, { 20, "a" } } end
-aimAt = function(name, who)
+function aimAt(name, who)
   local m, p = mounts[name], players[who]
   local x, _, z = p.fn(CLOCK)
   local want = math.deg(math.atan(-(x - m.x - 0.5), z - m.z - 0.5)) % 360

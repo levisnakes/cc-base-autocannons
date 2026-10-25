@@ -49,9 +49,10 @@ do
 end
 
 -- ============================================================ helpers
-local VERSION = "1.2.0"
+local VERSION = "1.3.0"
 local DIR = "/autocannons"
-local LATENCY = 0.15          -- seconds between reading a position and the round leaving
+local LATENCY = 0.05          -- seconds between a new aim reaching the mount and the round leaving
+local CMD_AHEAD = 0.05        -- a new aim reaches the mount one tick after it's sent
 local LEARN_TURN = 30         -- degrees the yaw test turns
 local atan2 = math.atan2 or math.atan
 local sqrt, floor, abs, max, min = math.sqrt, math.floor, math.abs, math.max, math.min
@@ -164,23 +165,27 @@ end
 -- S.players[lname] = { name, friend, x, y, z, vx, vy, vz, edge, hist }
 local S = { players = {} }
 
+-- velocity = least-squares slope over the last 0.6 s, so one jumpy reading
+-- doesn't swing the aim
 local function pushHist(e, x, y, z, t)
   local h = e.hist
   h[#h + 1] = { t = t, x = x, y = y, z = z }
-  while #h > 12 or (#h > 2 and t - h[1].t > 1.0) do table.remove(h, 1) end
-  local o = h[1]
-  local dt = t - o.t
-  if dt >= 0.2 then
-    e.vx, e.vy, e.vz = (x - o.x) / dt, (y - o.y) / dt, (z - o.z) / dt
-  elseif not e.vx then
-    e.vx, e.vy, e.vz = 0, 0, 0
+  while #h > 24 or (#h > 3 and t - h[1].t > 0.6) do table.remove(h, 1) end
+  e.vx, e.vy, e.vz = e.vx or 0, e.vy or 0, e.vz or 0
+  if #h < 3 or t - h[1].t < 0.15 then return end
+  local n, st, sx, sy, sz = #h, 0, 0, 0, 0
+  for _, s in ipairs(h) do st, sx, sy, sz = st + s.t, sx + s.x, sy + s.y, sz + s.z end
+  st, sx, sy, sz = st / n, sx / n, sy / n, sz / n
+  local stt, stx, sty, stz = 0, 0, 0, 0
+  for _, s in ipairs(h) do
+    local dt = s.t - st
+    stt, stx, sty, stz = stt + dt * dt, stx + dt * (s.x - sx), sty + dt * (s.y - sy), stz + dt * (s.z - sz)
   end
+  if stt > 0 then e.vx, e.vy, e.vz = stx / stt, sty / stt, stz / stt end
 end
 
-function S.scan(now)
-  if not P.det then return end
-  local ok, names = P.call(P.det, "getPlayersInRange", DETECT_RANGE)
-  if not ok or type(names) ~= "table" then return end
+-- reads every player in names (one game tick for all of them)
+function S.scan(names)
   local got, fns = {}, {}
   for _, name in ipairs(names) do
     fns[#fns + 1] = function()
@@ -189,6 +194,7 @@ function S.scan(now)
     end
   end
   U.all(fns)
+  local now = os.clock()
   for name, p in pairs(got) do
     local l = string.lower(name)
     local e = S.players[l]
@@ -207,11 +213,26 @@ function S.scan(now)
   end
 end
 
+-- the player list is refreshed once a second; positions every tick
 function S.loop()
+  local names, listedAt = {}, -1e9
   while true do
-    S.scan(os.clock())
-    sleep(0.1)
+    local t0 = os.clock()
+    if P.det and t0 - listedAt >= 1 then
+      listedAt = t0
+      local ok, n = P.call(P.det, "getPlayersInRange", DETECT_RANGE)
+      if ok and type(n) == "table" then names = n end
+    end
+    if P.det then S.scan(names) end
+    if os.clock() - t0 < 0.04 then sleep(0.05) end
   end
+end
+
+-- where e will be `ahead` seconds after its last reading
+function S.predict(e, ahead)
+  local dt = os.clock() - e.seen + ahead
+  return { name = e.name, x = e.x + e.vx * dt, y = e.y + e.vy * dt, z = e.z + e.vz * dt,
+    vx = e.vx, vy = e.vy, vz = e.vz }
 end
 
 -- ============================================================ ballistics
@@ -479,28 +500,52 @@ function T.candidates(t, px, py, pz)
   return out
 end
 
+-- Works out this tick's aim from the mount's last reading, then sends the aim,
+-- any trigger change and the next getInfo together, so each costs one game tick.
+-- The mount turns at full shaft speed and stops once it reaches its target, so
+-- a fresh target every tick is what keeps it moving smoothly.
 function T.step(t, now)
-  local ok, info = P.call(t.name, "getInfo")
-  if not ok or type(info) ~= "table" then t.state = "no reply" setFire(t, false) return end
-  t.info = info
+  local calls = {}
+  local function call(...)
+    local a = table.pack(...)
+    calls[#calls + 1] = function() P.call(table.unpack(a, 1, a.n)) end
+  end
+  local function fire(on)
+    if t.firing ~= on then t.firing = on call(t.name, "fire", on) end
+  end
+  T.think(t, now, call, fire)
+  calls[#calls + 1] = function()
+    local ok, info = P.call(t.name, "getInfo")
+    t.info = ok and type(info) == "table" and info or nil
+  end
+  U.all(calls)
+end
+
+function T.think(t, now, call, fire)
+  local info = t.info
+  if not info then t.state = "no reply" fire(false) return end
   if info.assembled == false then
-    setFire(t, false)
+    fire(false)
     t.state = "not assembled"
-    P.call(t.name, "assemble", true)
+    call(t.name, "assemble", true)
     return
   end
-  if not info.computerControl then P.call(t.name, "setComputerControl", true) end
+  if not info.computerControl then
+    call(t.name, "setComputerControl", true)
+    t.sent = nil
+  end
   t.noPower = (info.yawShaftSpeed or 0) == 0 or (info.pitchShaftSpeed or 0) == 0
-  if not T.yawMap[t.name] then setFire(t, false) t.needsLearn = true return end
+  if not T.yawMap[t.name] then fire(false) t.needsLearn = true return end
 
   local px, py, pz = info.x + 0.5, info.y + 1.5, info.z + 0.5
   local chosen, held
   for _, cand in ipairs(T.candidates(t, px, py, pz)) do
-    local yaw, pitch, ticks, ax, ay, az = Bal.aim(t.c, px, py, pz, cand.e, t.target == cand.key and t.pitch or nil)
+    local e = S.predict(cand.e, CMD_AHEAD)
+    local yaw, pitch, ticks, ax, ay, az = Bal.aim(t.c, px, py, pz, e, t.target == cand.key and t.pitch or nil)
     if yaw then
-      local why = not T.test and Bal.unsafe(Bal.path(t.c, px, py, pz, yaw, pitch, ticks), ticks, ax, ay, az, cand.e)
+      local why = not T.test and Bal.unsafe(Bal.path(t.c, px, py, pz, yaw, pitch, ticks), ticks, ax, ay, az, e)
       if not why then
-        chosen = { key = cand.key, e = cand.e, yaw = yaw, pitch = pitch, ax = ax, az = az }
+        chosen = { key = cand.key, e = e, yaw = yaw, pitch = pitch, ax = ax, az = az }
         break
       end
       held = held or why
@@ -510,7 +555,7 @@ function T.step(t, now)
   end
 
   if not chosen then
-    setFire(t, false)
+    fire(false)
     t.target, t.pitch = nil, nil
     t.state = held and ("hold: " .. held) or (t.noPower and "NO ROTATION" or "watching")
     return
@@ -518,8 +563,8 @@ function T.step(t, now)
   t.target, t.pitch = chosen.key, chosen.pitch
   local my = (chosen.yaw + t.c.yawTrim) % 360
   local mp = (chosen.pitch + t.c.pitchTrim) * (INVERT_PITCH and -1 or 1)
-  if not t.sent or abs(U.angDiff(t.sent[1], my)) > 0.05 or abs(t.sent[2] - mp) > 0.05 or now - t.sent[3] > 1 then
-    P.call(t.name, "setTargetAngles", my, mp)
+  if not t.sent or abs(U.angDiff(t.sent[1], my)) > 0.01 or abs(t.sent[2] - mp) > 0.01 or now - t.sent[3] > 1 then
+    call(t.name, "setTargetAngles", my, mp)
     t.sent = { my, mp, now }
   end
 
@@ -531,16 +576,16 @@ function T.step(t, now)
   local aimed = cy and info.pitch and abs(U.angDiff(cy, my)) <= tol and abs(info.pitch - mp) <= tol
   local name = chosen.e.name
   if T.test then
-    setFire(t, false)
+    fire(false)
     t.state = (aimed and "TEST: locked on " or "TEST: aiming at ") .. name
   elseif not aimed then
-    setFire(t, false)
+    fire(false)
     t.state = "aiming at " .. name .. (t.noPower and " (NO ROTATION)" or "")
   elseif not T.armed then
-    setFire(t, false)
+    fire(false)
     t.state = "on " .. name .. " (SAFE)"
   else
-    setFire(t, true)
+    fire(true)
     t.state = "FIRING on " .. name
   end
 end
@@ -558,7 +603,8 @@ function T.loop()
       end
     end
     U.all(fns)
-    sleep(0.05)
+    -- the peripheral calls already wait a tick; only sleep if they didn't
+    if os.clock() - now < 0.04 then sleep(0.05) end
   end
 end
 

@@ -12,14 +12,18 @@ lua.globals().math.randomseed(int(os.environ.get("SEED", "1")))
 lua.globals().FRIEND = os.environ.get("FRIEND") == "1"
 lua.globals().TRACK = os.environ.get("TRACK") == "1"
 if os.environ.get("TRACK") == "1":
-    lua.execute(sim, src, 28.0)
+    lua.execute(sim, src, 34.0)
     g = lua.globals()
     print("FIRED", dict(g.fired.items()))
     assert sum(g.fired.values()) == 0, "fired during track test"
-    # before Mechanoo arrives the only players in reach are levisnakes and Bob
-    offs = {m: min(g.aimAt(m, "levisnakes"), g.aimAt(m, "Bob")) for m in ("cm0", "cm1", "cm2")}
-    print("AIM ERROR deg", offs)
-    assert all(v < 2 for v in offs.values()), "not locked on a friend"
+    steps = list(g.yawSteps.values())
+    errs = list(g.aimErrs.values())
+    stops = sum(abs(s) < 0.01 for s in steps) / len(steps)
+    jerk = sum(abs(b - a) for a, b in zip(steps, steps[1:])) / (len(steps) - 1)
+    print(f"cm0 following a walking player: stopped {stops:.0%} of ticks, "
+          f"jerk {jerk:.3f} deg/tick, mean aim error {sum(errs) / len(errs):.2f} deg, max {max(errs):.2f}")
+    assert max(errs) < 3, "lost the walking player"
+    assert stops < float(os.environ.get("MAX_STOPS", "0.2")), "stop-start tracking"
     print("TRACK TEST OK")
     sys.exit(0)
 lua.execute(sim, src, float(os.environ.get("END", "80")))
