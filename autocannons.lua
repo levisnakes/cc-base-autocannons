@@ -49,7 +49,7 @@ do
 end
 
 -- ============================================================ helpers
-local VERSION = "1.0.0"
+local VERSION = "1.1.0"
 local DIR = "/autocannons"
 local LATENCY = 0.15          -- seconds between reading a position and the round leaving
 local LEARN_TURN = 30         -- degrees the yaw test turns
@@ -113,15 +113,22 @@ local function rebuildLists() friends = U.lowerSet(ALLOWED, ALLIES, savedAllies)
 rebuildLists()
 
 -- ============================================================ base area
+-- [C] on the computer saves a centre that wins over CORE
 local B = {}
-do
-  local cx, cz = floor(CORE.x / 16), floor(CORE.z / 16)
+function B.set(x, z)
+  local cx, cz = floor(x / 16), floor(z / 16)
+  B.x, B.z = x, z
   B.minX = (cx - BASE_RADIUS_CHUNKS) * 16
   B.maxX = (cx + BASE_RADIUS_CHUNKS + 1) * 16
   B.minZ = (cz - BASE_RADIUS_CHUNKS) * 16
   B.maxZ = (cz + BASE_RADIUS_CHUNKS + 1) * 16
   B.cx, B.cz = (B.minX + B.maxX) / 2, (B.minZ + B.maxZ) / 2
   B.chunks = BASE_RADIUS_CHUNKS * 2 + 1
+end
+do
+  local c = U.load(DIR .. "/core") or CORE
+  B.set(c.x, c.z)
+  B.unset = c.x == 0 and c.z == 0
 end
 -- distance outside the base edge (0 inside)
 function B.edge(x, z)
@@ -592,17 +599,20 @@ function UI.draw()
   term.setBackgroundColor(colors.black)
   term.setTextColor(colors.lightGray)
   term.setCursorPos(1, 2)
-  write(string.format("%dx%d chunks, engage %s out, detector %s", B.chunks, B.chunks, U.m(ENGAGE_RANGE),
-    P.det and "ok" or "MISSING"))
+  if B.unset then
+    term.setTextColor(colors.red)
+    write("Base centre not set! Stand on the core, press [C]")
+  else
+    write(string.format("%dx%d chunks at %d %d, engage %s out", B.chunks, B.chunks, floor(B.x), floor(B.z),
+      U.m(ENGAGE_RANGE)))
+  end
 
   local list = {}
-  for _, p in pairs(S.players) do
-    if p.edge <= ENGAGE_RANGE + 64 then list[#list + 1] = p end
-  end
+  for _, p in pairs(S.players) do list[#list + 1] = p end
   table.sort(list, function(a, b) return a.edge < b.edge end)
   term.setCursorPos(1, 4)
-  term.setTextColor(colors.gray)
-  write("Players near (" .. #list .. ")")
+  term.setTextColor(P.det and colors.gray or colors.red)
+  write(P.det and ("Players seen (" .. #list .. " within " .. DETECT_RANGE .. "m)") or "Player detector MISSING")
   local row = 5
   local maxRows = max(1, h - 7 - #T.list)
   for i = 1, min(#list, maxRows) do
@@ -610,8 +620,8 @@ function UI.draw()
     term.setCursorPos(1, row)
     term.setTextColor(p.friend and colors.lime or colors.red)
     local where = p.edge <= 0 and "INSIDE" or (U.m(p.edge) .. " " .. U.compass(p.x - B.cx, p.z - B.cz))
-    local tag = p.friend and "friend" or (p.edge <= ENGAGE_RANGE and "TARGET" or "hostile")
-    write(string.format("%-8s %-16s %s", tag, p.name:sub(1, 16), where))
+    local tag = p.friend and "friend" or (p.edge <= ENGAGE_RANGE and "TARGET" or "out")
+    write(string.format("%-7s %-16s %-9s %d %d %d", tag, p.name:sub(1, 16), where, floor(p.x), floor(p.y), floor(p.z)))
     row = row + 1
   end
   row = row + 1
@@ -632,7 +642,23 @@ function UI.draw()
   end
   term.setCursorPos(1, h)
   term.setTextColor(colors.yellow)
-  write("[A]rm [T]est shot [F]riends [Y]aw test [R]escan")
+  write("[A]rm [C]entre [T]est [F]riends [Y]aw [R]escan")
+end
+
+-- base centre = where a player is standing now (on the protection block)
+function UI.setCentre()
+  if not P.det then print("No player detector.") sleep(2) return end
+  print("Stand on the protection block.")
+  local name = UI.ask("Your name: ")
+  local ok, p = P.call(P.det, "getPlayer", name)
+  if not ok or type(p) ~= "table" or not p.x then print("Can't see " .. name .. ".") sleep(2) return end
+  local c = { x = floor(p.x), y = floor(p.y), z = floor(p.z) }
+  U.save(DIR .. "/core", c)
+  B.set(c.x, c.z)
+  B.unset = false
+  for _, e in pairs(S.players) do e.edge = B.edge(e.x, e.z) end
+  print(string.format("Base centre set to %d %d %d.", c.x, c.y, c.z))
+  sleep(2)
 end
 
 function UI.ask(prompt)
@@ -734,6 +760,7 @@ function UI.loop()
         elseif UI.ask("Type ARM to let the cannons fire: ") == "ARM" then
           T.setArmed(true)
         end
+      elseif k == "c" then UI.begin() UI.setCentre()
       elseif k == "t" then UI.begin() UI.testShot()
       elseif k == "f" then UI.begin() UI.friendsMenu()
       elseif k == "y" then UI.begin() UI.yawTest()
