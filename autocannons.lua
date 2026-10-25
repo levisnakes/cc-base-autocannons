@@ -49,7 +49,7 @@ do
 end
 
 -- ============================================================ helpers
-local VERSION = "1.1.0"
+local VERSION = "1.2.0"
 local DIR = "/autocannons"
 local LATENCY = 0.15          -- seconds between reading a position and the round leaving
 local LEARN_TURN = 30         -- degrees the yaw test turns
@@ -456,13 +456,14 @@ function T.learn(t)
   return true
 end
 
--- hostiles this turret could shoot at, best first
+-- hostiles this turret could shoot at, best first.
+-- In track test (T.test) everyone is a candidate, friends too, but nothing fires.
 function T.candidates(t, px, py, pz)
   local out = {}
   for l, p in pairs(S.players) do
-    if not p.friend and p.edge <= ENGAGE_RANGE then
+    if T.test or (not p.friend and p.edge <= ENGAGE_RANGE) then
       local d = sqrt((p.x - px) ^ 2 + (p.y - py) ^ 2 + (p.z - pz) ^ 2)
-      if d >= MIN_RANGE then
+      if d >= (T.test and 2 or MIN_RANGE) then
         local score = p.edge + d * 0.05
         if t.target == l then score = score - 15 end
         if not FOCUS_FIRE then
@@ -497,7 +498,7 @@ function T.step(t, now)
   for _, cand in ipairs(T.candidates(t, px, py, pz)) do
     local yaw, pitch, ticks, ax, ay, az = Bal.aim(t.c, px, py, pz, cand.e, t.target == cand.key and t.pitch or nil)
     if yaw then
-      local why = Bal.unsafe(Bal.path(t.c, px, py, pz, yaw, pitch, ticks), ticks, ax, ay, az, cand.e)
+      local why = not T.test and Bal.unsafe(Bal.path(t.c, px, py, pz, yaw, pitch, ticks), ticks, ax, ay, az, cand.e)
       if not why then
         chosen = { key = cand.key, e = cand.e, yaw = yaw, pitch = pitch, ax = ax, az = az }
         break
@@ -529,7 +530,10 @@ function T.step(t, now)
   local cy = T.realYaw(t, info)
   local aimed = cy and info.pitch and abs(U.angDiff(cy, my)) <= tol and abs(info.pitch - mp) <= tol
   local name = chosen.e.name
-  if not aimed then
+  if T.test then
+    setFire(t, false)
+    t.state = (aimed and "TEST: locked on " or "TEST: aiming at ") .. name
+  elseif not aimed then
     setFire(t, false)
     t.state = "aiming at " .. name .. (t.noPower and " (NO ROTATION)" or "")
   elseif not T.armed then
@@ -591,9 +595,9 @@ function UI.draw()
   write("AUTOCANNONS ")
   term.setTextColor(colors.gray)
   write("v" .. VERSION)
-  local st = T.armed and " ARMED " or " SAFE "
+  local st = T.test and " TRACK TEST - NOT FIRING " or (T.armed and " ARMED " or " SAFE ")
   term.setCursorPos(w - #st + 1, 1)
-  term.setBackgroundColor(T.armed and colors.red or colors.green)
+  term.setBackgroundColor(T.test and colors.blue or (T.armed and colors.red or colors.green))
   term.setTextColor(colors.white)
   write(st)
   term.setBackgroundColor(colors.black)
@@ -642,7 +646,7 @@ function UI.draw()
   end
   term.setCursorPos(1, h)
   term.setTextColor(colors.yellow)
-  write("[A]rm [C]entre [T]est [F]riends [Y]aw [R]escan")
+  write("[A]rm [K]track [C]entre [T]est [F]riends [Y]aw [R]")
 end
 
 -- base centre = where a player is standing now (on the protection block)
@@ -760,6 +764,9 @@ function UI.loop()
         elseif UI.ask("Type ARM to let the cannons fire: ") == "ARM" then
           T.setArmed(true)
         end
+      elseif k == "k" then
+        T.test = not T.test
+        if T.test then T.allOff() end
       elseif k == "c" then UI.begin() UI.setCentre()
       elseif k == "t" then UI.begin() UI.testShot()
       elseif k == "f" then UI.begin() UI.friendsMenu()

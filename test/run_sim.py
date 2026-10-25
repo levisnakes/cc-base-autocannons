@@ -10,6 +10,18 @@ sim = open(os.path.join(here, "sim.lua"), encoding="utf-8").read()
 lua = LuaRuntime()
 lua.globals().math.randomseed(int(os.environ.get("SEED", "1")))
 lua.globals().FRIEND = os.environ.get("FRIEND") == "1"
+lua.globals().TRACK = os.environ.get("TRACK") == "1"
+if os.environ.get("TRACK") == "1":
+    lua.execute(sim, src, 28.0)
+    g = lua.globals()
+    print("FIRED", dict(g.fired.items()))
+    assert sum(g.fired.values()) == 0, "fired during track test"
+    # before Mechanoo arrives the only players in reach are levisnakes and Bob
+    offs = {m: min(g.aimAt(m, "levisnakes"), g.aimAt(m, "Bob")) for m in ("cm0", "cm1", "cm2")}
+    print("AIM ERROR deg", offs)
+    assert all(v < 2 for v in offs.values()), "not locked on a friend"
+    print("TRACK TEST OK")
+    sys.exit(0)
 lua.execute(sim, src, float(os.environ.get("END", "80")))
 g = lua.globals()
 

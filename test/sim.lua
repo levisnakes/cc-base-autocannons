@@ -233,6 +233,14 @@ read = function()
 end
 
 local keys = { { 20, "a" } }
+-- track test on, then armed too: must aim at friends but never fire
+if TRACK then keys = { { 15, "k" }, { 20, "a" } } end
+aimAt = function(name, who)
+  local m, p = mounts[name], players[who]
+  local x, _, z = p.fn(CLOCK)
+  local want = math.deg(math.atan(-(x - m.x - 0.5), z - m.z - 0.5)) % 360
+  return math.abs((m.yaw - want + 180) % 360 - 180)
+end
 
 -- ---------------------------------------------------------------- run
 local main = coroutine.create(function() return load(SRC, "=autocannons")() end)
