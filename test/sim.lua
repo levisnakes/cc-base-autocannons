@@ -13,6 +13,8 @@ AUTO_UPDATE = false
 ]] .. (SHIPS and ('SHIP_TARGETS = "' .. SHIPS .. '"\n') or "")
 -- "home" is the user's own parked ship, marked with [S] 6 earlier
 files["/autocannons/myships"] = '{["home"]=true}'
+-- RAIL: cm2 is a cbc_at medium rocket rail (4 rail blocks, HE, fuel 30)
+if RAIL then files["/autocannons/rails"] = '{["cm2"]=true}' end
 
 
 -- ---------------------------------------------------------------- kernel
@@ -141,6 +143,19 @@ end
 -- the cannon pivots on the block 2 above the mount, muzzle 4.5 blocks out
 local SPEED, LIFE, BARREL, DRAG, G = 9, 60, 4.5, 0.01, 0.025
 local shells = {}
+-- like cbc_at: launch 1.5 + 0.375 * 4 = 3 b/t, spawn 3.5 blocks out, thrust +0.05/tick
+-- (max 3.75) while fuel burns, quadratic drag 0.013, gravity -0.03 * 0.875 / 1.3
+local RFUEL, RDRAG, RG = 30, 0.013, -0.03
+local function spawnRocket(name, m)
+  local cp = math.cos(math.rad(m.pitch))
+  local dx, dy, dz = -math.sin(math.rad(m.yaw)) * cp, math.sin(math.rad(m.pitch)), math.cos(math.rad(m.yaw)) * cp
+  local s = 0.017 * 0.5                                -- a little spread
+  dx, dy, dz = dx + (math.random() - 0.5) * s, dy + (math.random() - 0.5) * s, dz + (math.random() - 0.5) * s
+  local px, py, pz = m.x + 0.5, m.y + 2.5, m.z + 0.5
+  shells[#shells + 1] = { x = px + dx * 3.5, y = py + dy * 3.5, z = pz + dz * 3.5,
+    vx = dx * 3, vy = dy * 3, vz = dz * 3, life = 60, fuel = RFUEL, thr = 0, rocket = true, from = name }
+  fired[name] = fired[name] + 1
+end
 local function spawnShell(name, m)
   local cp = math.cos(math.rad(m.pitch))
   local dx, dy, dz = -math.sin(math.rad(m.yaw)) * cp, math.sin(math.rad(m.pitch)), math.cos(math.rad(m.yaw)) * cp
@@ -183,19 +198,31 @@ local function tick()
       if math.abs(dp) <= 2 then m.pitch = m.pitch + dp else m.pitch = m.pitch + 2 * (dp > 0 and 1 or -1) end
     end
     m.cool = m.cool - 1
-    if m.fire and m.asm and m.cool <= 0 then spawnShell(name, m) m.cool = 4 end
+    if m.fire and m.asm and m.cool <= 0 then
+      if RAIL and name == "cm2" then spawnRocket(name, m) m.cool = 50 else spawnShell(name, m) m.cool = 4 end
+    end
   end
   for i = #shells, 1, -1 do
     local s = shells[i]
     local ox, oy, oz = s.x, s.y, s.z
-    local fx, fy, fz = -DRAG * s.vx, -DRAG * s.vy - G, -DRAG * s.vz
+    local fx, fy, fz
+    if s.rocket then
+      local sp = math.sqrt(s.vx ^ 2 + s.vy ^ 2 + s.vz ^ 2)
+      local burning = s.fuel > 0
+      if burning and s.thr < 3.75 then s.thr = math.min(s.thr + 0.05, 3.75) end
+      local f = (burning and s.thr or 0) - RDRAG * sp * sp
+      fx, fy, fz = s.vx / sp * f, s.vy / sp * f + RG * (burning and 0.875 or 1.3), s.vz / sp * f
+    else
+      fx, fy, fz = -DRAG * s.vx, -DRAG * s.vy - G, -DRAG * s.vz
+    end
     s.x, s.y, s.z = s.x + s.vx + fx / 2, s.y + s.vy + fy / 2, s.z + s.vz + fz / 2
     s.vx, s.vy, s.vz = s.vx + fx, s.vy + fy, s.vz + fz
-    s.life = s.life - 1
+    -- rockets burn fuel first, then count down their 60-tick lifetime
+    if s.rocket and s.fuel > 0 then s.fuel = s.fuel - 1 else s.life = s.life - 1 end
     local dead = s.life <= 0 or s.y < 63
     for name, p in pairs(players) do
       local x, y, z = p.fn(CLOCK)
-      if not dead and segDist(ox, oy, oz, s.x, s.y, s.z, x, y + 0.9, z) < 1.0 then
+      if not dead and segDist(ox, oy, oz, s.x, s.y, s.z, x, y + 0.9, z) < (s.rocket and 1.5 or 1.0) then
         hits[#hits + 1] = { t = CLOCK, who = name, from = s.from }
         dead = true
       end

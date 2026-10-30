@@ -15,6 +15,7 @@ lua.globals().FRIEND = os.environ.get("FRIEND") == "1"
 lua.globals().TRACK = os.environ.get("TRACK") == "1"
 lua.globals().SHIPS = os.environ.get("SHIPS") or None
 lua.globals().PICK = os.environ.get("PICK") or None
+lua.globals().RAIL = os.environ.get("RAIL") == "1"
 if os.environ.get("SETTINGS") == "1":
     lua.globals().SETTINGS = True
     lua.execute(sim, src, 12.0)
@@ -74,6 +75,14 @@ if os.environ.get("FRIEND") == "1":
     late = [h for h in hits if h[1] == "Mechanoo" and h[0] > 40.5]
     assert not late, f"fired at an enemy hugging an ally: {late[:3]}"
     print("FRIEND HOLD OK")
+    sys.exit(0)
+if os.environ.get("RAIL") == "1":
+    rockets = g.fired["cm2"]
+    rhits = sum(1 for h in hits if h[2] == "cm2" and h[1] in ("Mechanoo", "Pilot")) + 0
+    print(f"RAIL cm2: {rockets} rockets, {rhits} hit a hostile ({rhits / max(rockets, 1):.0%})")
+    assert rockets >= 10, "rail barely fired"
+    assert rhits >= rockets * 0.4, "rockets mostly miss"
+    print("RAIL OK")
     sys.exit(0)
 if os.environ.get("PICK") == "FarGuy":
     n = sum(1 for h in hits if h[1] == "FarGuy")

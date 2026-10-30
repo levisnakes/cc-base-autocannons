@@ -40,6 +40,14 @@ INVERT_PITCH = false          -- true if the test shot tilts the barrel down ins
 -- Per-cannon overrides by peripheral name, e.g.
 -- TURRETS = { cannon_mount_2 = { barrels = 4, pitchTrim = 0.5 } }
 TURRETS = {}
+
+-- Rocket rails (CBC: Advanced Technology medium rocket rail) on cannon mounts.
+-- Mark which mounts are rails with [S] > R. ROCKET_FUEL is the rocket's
+-- "Burning Time" tooltip. ROCKET = "he", "ap", "hef" or "heat".
+RAIL_BLOCKS = 4               -- rail blocks in front of the rail end (each holds a rocket)
+ROCKET = "he"
+ROCKET_FUEL = 30
+RAIL_TARGETS = "all"          -- "all", or "ships" = rails only fire at ships (and a picked target)
 AUTO_UPDATE = true
 
 -- Settings in /config.lua override the ones above. Use it for anything you
@@ -60,7 +68,7 @@ do
 end
 
 -- ============================================================ helpers
-local VERSION = "1.5.0"
+local VERSION = "1.6.0"
 local DIR = "/autocannons"
 local LATENCY = 0.05          -- seconds between a new aim reaching the mount and the round leaving
 local CMD_AHEAD = 0.05        -- a new aim reaches the mount one tick after it's sent
@@ -68,6 +76,13 @@ local LEARN_TURN = 30         -- degrees the yaw test turns
 local atan2 = math.atan2 or math.atan
 local sqrt, floor, abs, max, min = math.sqrt, math.floor, math.abs, math.max, math.min
 local rad, deg, sin, cos = math.rad, math.deg, math.sin, math.cos
+
+-- cbc_at 0.1.4 medium rockets: gravity and quadratic drag of the heavy autocannon
+-- shell each one carries. Thrust grows 0.05 a tick (max 3.75) while fuel burns.
+local ROCKETS = {
+  he = { gravity = -0.03, drag = 0.013 }, ap = { gravity = -0.03, drag = 0.013 },
+  hef = { gravity = -0.033, drag = 0.013 }, heat = { gravity = -0.035, drag = 0.012 },
+}
 
 -- CBC 5.11.7 autocannon data: speed = base + inc * min(barrels, maxInc)
 local MATERIALS = {
@@ -121,7 +136,7 @@ fs.makeDir(DIR)
 
 -- [S] on the computer saves these; they win over the settings at the top
 local SAVED_KEYS = { "BASE_RADIUS_CHUNKS", "ENGAGE_RANGE", "SHIP_TARGETS", "SHIP_CREW_RADIUS", "FOCUS_FIRE",
-  "BARRELS", "RECOIL_SPRING", "PITCH_TRIM" }
+  "BARRELS", "RECOIL_SPRING", "PITCH_TRIM", "RAIL_BLOCKS", "ROCKET", "ROCKET_FUEL", "RAIL_TARGETS" }
 do
   local saved = U.load(DIR .. "/settings") or {}
   for _, k in ipairs(SAVED_KEYS) do
@@ -343,9 +358,28 @@ end
 
 -- ============================================================ ballistics
 -- MC yaw: 0 = south (+z), 90 = west (-x), 180 = north, 270 = east. Pitch + = up.
--- CBC projectile step: F = -drag * v + gravity; pos += v + F / 2; v += F
-local DRAG, GRAVITY = 0.01, 0.025
+-- CBC projectile step: F = forces; pos += v + F / 2; v += F. Forces:
+--   round:  -drag * v + gravity
+--   rocket: thrust along v while burning, -drag * |v|^2 along v, gravity * 0.875 burning / 1.3 after
+-- c = { speed, barrel, life, gravity (negative), drag, quad, fuel (rockets only) }
 local Bal = {}
+-- one tick in the vertical plane of the shot; k = tick number from 1, thr = thrust so far
+function Bal.step(c, k, h, y, vh, vy, thr)
+  local fh, fy = 0, c.gravity
+  local sp = sqrt(vh * vh + vy * vy)
+  if c.fuel then
+    local burning = k <= c.fuel
+    if burning then thr = min(thr + 0.05, 3.75) end
+    fy = c.gravity * (burning and 0.875 or 1.3)
+    if sp > 1e-6 then
+      local f = (burning and thr or 0) - c.drag * sp * (c.quad and sp or 1)
+      fh, fy = fh + vh / sp * f, fy + vy / sp * f
+    end
+  else
+    fh, fy = -c.drag * vh, fy - c.drag * vy
+  end
+  return h + vh + fh / 2, y + vy + fy / 2, vh + fh, vy + fy, thr
+end
 function Bal.dir(yaw, pitch)
   local cp = cos(rad(pitch))
   return -sin(rad(yaw)) * cp, sin(rad(pitch)), cos(rad(yaw)) * cp
@@ -357,16 +391,14 @@ function Bal.heightAt(c, pitch, D)
   local cp, sp = cos(rad(pitch)), sin(rad(pitch))
   local h, y = c.barrel * cp, c.barrel * sp
   if h >= D then return D * sp / max(cp, 1e-3), 0 end
-  local vh, vy = c.speed * cp, c.speed * sp
+  local vh, vy, thr = c.speed * cp, c.speed * sp, 0
   for t = 1, c.life do
-    local fh, fy = -DRAG * vh, -DRAG * vy - GRAVITY
-    local nh, ny = h + vh + fh / 2, y + vy + fy / 2
+    local nh, ny, nvh, nvy, nthr = Bal.step(c, t, h, y, vh, vy, thr)
     if nh >= D then
       local f = (D - h) / (nh - h)
       return y + (ny - y) * f, t - 1 + f
     end
-    h, y = nh, ny
-    vh, vy = vh + fh, vy + fy
+    h, y, vh, vy, thr = nh, ny, nvh, nvy, nthr
   end
   return nil
 end
@@ -436,13 +468,16 @@ end
 function Bal.path(c, px, py, pz, yaw, pitch, ticks)
   local dx, dy, dz = Bal.dir(yaw, pitch)
   local x, y, z = px + dx * c.barrel, py + dy * c.barrel, pz + dz * c.barrel
-  local vx, vy, vz = dx * c.speed, dy * c.speed, dz * c.speed
+  -- the shot stays in one vertical plane, so step (h, y) and turn it back into x, z
+  local hx, hz = -sin(rad(yaw)), cos(rad(yaw))
+  local cp = cos(rad(pitch))
+  local h, vh, vy, thr = c.barrel * cp, c.speed * cp, dy * c.speed, 0
   local pts = { { x, y, z } }
-  for _ = 1, min(c.life, floor(ticks) + 20) do
-    local fx, fy, fz = -DRAG * vx, -DRAG * vy - GRAVITY, -DRAG * vz
-    x, y, z = x + vx + fx / 2, y + vy + fy / 2, z + vz + fz / 2
-    vx, vy, vz = vx + fx, vy + fy, vz + fz
-    pts[#pts + 1] = { x, y, z }
+  local y0 = py
+  local yy = y - y0
+  for k = 1, min(c.life, floor(ticks) + 20) do
+    h, yy, vh, vy, thr = Bal.step(c, k, h, yy, vh, vy, thr)
+    pts[#pts + 1] = { px + hx * h, y0 + yy, pz + hz * h }
   end
   return pts
 end
@@ -506,15 +541,29 @@ do
   if a ~= nil then T.armed = a end
 end
 
+-- which mounts carry rocket rails ([S] > R); name -> true
+T.rails = U.load(DIR .. "/rails") or {}
+
 function T.cfg(name)
   local o = TURRETS[name] or {}
+  if o.rail or (o.rail == nil and T.rails[name]) then
+    -- cbc_at rail (steel material): launch 1.5 + 0.375 per rail block (max 4);
+    -- the rocket spawns 1.5 blocks back from the block past the last rail
+    local n = o.railBlocks or RAIL_BLOCKS
+    local r = ROCKETS[o.rocket or ROCKET] or ROCKETS.he
+    local fuel = o.fuel or ROCKET_FUEL
+    return { rail = true, speed = 1.5 + 0.375 * min(n, 4), barrel = n - 0.5, life = fuel + 60,
+      fuel = fuel, gravity = r.gravity, drag = r.drag, quad = true,
+      minPitch = o.minPitch or -30, maxPitch = o.maxPitch or 60,
+      pitchTrim = o.pitchTrim or PITCH_TRIM, yawTrim = o.yawTrim or YAW_TRIM }
+  end
   local mat = MATERIALS[o.cannon or CANNON] or MATERIALS.steel
   local spring = o.recoilSpring
   if spring == nil then spring = RECOIL_SPRING end
   -- the breech is at the pivot; the spring and barrels run forward from it
   local barrels = (o.barrels or BARRELS) + (spring and 1 or 0)
   local speed = o.speed or SHOT_SPEED or (mat.base + mat.inc * min(barrels, mat.maxInc))
-  return { speed = speed, life = o.life or mat.life, barrel = barrels + 0.5,
+  return { speed = speed, life = o.life or mat.life, barrel = barrels + 0.5, gravity = -0.025, drag = 0.01,
     minPitch = o.minPitch or -30, maxPitch = o.maxPitch or 60,
     pitchTrim = o.pitchTrim or PITCH_TRIM, yawTrim = o.yawTrim or YAW_TRIM }
 end
@@ -619,8 +668,9 @@ end
 function T.candidates(t, px, py, pz)
   local out = {}
   local pick = T.pickedTarget()
+  local shipsOnly = t.c.rail and RAIL_TARGETS == "ships"
   for l, p in pairs(S.players) do
-    if T.test or (not p.friend and (p.edge <= ENGAGE_RANGE or pick == p)) then
+    if T.test or (not p.friend and (p.edge <= ENGAGE_RANGE or pick == p) and (not shipsOnly or pick == p)) then
       local d = sqrt((p.x - px) ^ 2 + (p.y - py) ^ 2 + (p.z - pz) ^ 2)
       if d >= (T.test and 2 or MIN_RANGE) then
         local score = p.edge + d * 0.05
@@ -871,7 +921,7 @@ function UI.draw()
     row = row + 1
     term.setCursorPos(1, row)
     term.setTextColor(t.firing and colors.red or colors.white)
-    write((t.name .. " " .. (t.state or "")):sub(1, w))
+    write((t.name .. (t.c.rail and " [rail] " or " ") .. (t.state or "")):sub(1, w))
   end
   if #T.list == 0 then
     row = row + 1
@@ -1007,6 +1057,42 @@ function UI.pickMenu()
   elseif n and opts[n] then T.pick, T.pickLost = opts[n].key, nil end
 end
 
+function UI.railMenu()
+  while true do
+    term.clear()
+    term.setCursorPos(1, 1)
+    print("Rocket rails. A number toggles that mount rail/autocannon.")
+    for i, t in ipairs(T.list) do
+      print(i .. ") " .. t.name .. (t.c.rail and "  ROCKET RAIL" or "  autocannon"))
+    end
+    print(string.format("B) Rail blocks: %d (launch %.2f b/t)", RAIL_BLOCKS, 1.5 + 0.375 * min(RAIL_BLOCKS, 4)))
+    print("K) Rocket: " .. ROCKET .. " (he / ap / hef / heat)")
+    print("F) Fuel (Burning Time tooltip): " .. ROCKET_FUEL)
+    print("T) Rails fire at: " .. (RAIL_TARGETS == "ships" and "ships only" or "players and ships"))
+    print("Enter = back")
+    local k = UI.ask("> "):lower()
+    if k == "" then return end
+    local n = tonumber(k)
+    if n and T.list[n] then
+      local name = T.list[n].name
+      T.rails[name] = not T.rails[name] or nil
+      U.save(DIR .. "/rails", T.rails)
+    elseif k == "b" then
+      local v = tonumber(UI.ask("Rail blocks: "))
+      if v and v >= 1 then RAIL_BLOCKS = floor(v) end
+    elseif k == "k" then
+      local v = UI.ask("Rocket (he/ap/hef/heat): "):lower()
+      if ROCKETS[v] then ROCKET = v end
+    elseif k == "f" then
+      local v = tonumber(UI.ask("Burning Time from the rocket's tooltip: "))
+      if v and v >= 0 then ROCKET_FUEL = floor(v) end
+    elseif k == "t" then RAIL_TARGETS = RAIL_TARGETS == "ships" and "all" or "ships"
+    end
+    T.sync()
+    saveSettings()
+  end
+end
+
 local SHIP_MODES = { off = "hostile", hostile = "unknown", unknown = "off" }
 local SHIP_DESC = { off = "off", hostile = "ships with a hostile on board",
   unknown = "hostile ships + ships with nobody seen" }
@@ -1032,6 +1118,10 @@ function UI.settings()
     print(string.format("B) Barrels: %d%s%s", BARRELS, RECOIL_SPRING and " + recoil spring" or ", no spring",
       c1 and string.format(" (%.1f b/t)", c1.speed) or ""))
     print(string.format("H) Pitch trim: %+.2f deg (+ = higher)", PITCH_TRIM))
+    local nr = 0
+    for _ in pairs(T.rails) do nr = nr + 1 end
+    print(string.format("R) Rocket rails: %d marked, %d blocks, %s, fuel %d, fire at %s",
+      nr, RAIL_BLOCKS, ROCKET, ROCKET_FUEL, RAIL_TARGETS))
     print("Enter = back")
     local k = UI.ask("> ")
     if k == "" then return end
@@ -1065,6 +1155,7 @@ function UI.settings()
       if n and n >= 1 then BARRELS = floor(n) end
       RECOIL_SPRING = UI.ask("Recoil spring behind the barrels? (y/n): "):lower():sub(1, 1) == "y"
       T.sync()
+    elseif k:lower() == "r" then UI.railMenu()
     elseif k:lower() == "h" then
       local n = tonumber(UI.ask("Pitch trim in degrees (shots high: try -0.5): "))
       if n then PITCH_TRIM = n T.sync() end

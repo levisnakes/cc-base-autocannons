@@ -13,6 +13,7 @@ wget https://raw.githubusercontent.com/levisnakes/cc-base-autocannons/main/autoc
 - Each autocannon sits on a full **Cannon Mount** (not the compact one) with rotation in **both** the yaw and pitch shafts. Faster shafts make the cannon turn faster.
 - Put a **wired modem** on every mount and on a **Player Detector**, and cable them all to the computer.
 - Keep each autocannon loaded with ammo.
+- Optional: **rocket rails** (CBC: Advanced Technology Wrought Iron Rocket Rail) on cannon mounts, wired the same way. Mark them with **S** > **R**.
 - Optional: Create Radar **plane radars** (or a radar bearing) on the same network, to see Sable ships. A plane radar covers a 90 degree cone, so 4 facing different ways cover everything.
 
 ## Settings (top of the file, or `/config.lua`)
@@ -30,6 +31,8 @@ wget https://raw.githubusercontent.com/levisnakes/cc-base-autocannons/main/autoc
 | `PIVOT_HEIGHT` | the cannon turns on the block 2 above the mount (2.5); use -1.5 for a ceiling mount |
 | `FOCUS_FIRE` | `false` spreads cannons over several targets, `true` puts them all on one |
 | `NO_FIRE_ZONES` | boxes shots must never fly through (your own buildings) |
+| `RAIL_BLOCKS`, `ROCKET`, `ROCKET_FUEL` | rocket rails: rail blocks (sets launch speed), `"he"` / `"ap"` / `"hef"` / `"heat"`, and the rocket's Burning Time tooltip (also in **S** > R) |
+| `RAIL_TARGETS` | `"all"`, or `"ships"` so rails only fire at ships and a picked target |
 | `PITCH_TRIM`, `YAW_TRIM`, `INVERT_PITCH` | fixes if the test shot lands off (pitch trim is also in **S** > H) |
 
 ## Keys
