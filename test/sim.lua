@@ -10,7 +10,10 @@ files["/config.lua"] = [[
 ALLOWED = { "levisnakes" }
 ALLIES = { "Bob" }
 AUTO_UPDATE = false
-]]
+]] .. (SHIPS and ('SHIP_TARGETS = "' .. SHIPS .. '"\n') or "")
+-- "home" is the user's own parked ship, marked with [S] 6 earlier
+files["/autocannons/myships"] = '{["home"]=true}'
+
 
 -- ---------------------------------------------------------------- kernel
 os.clock = function() return CLOCK end
@@ -76,7 +79,8 @@ shell = { getRunningProgram = function() return "startup.lua" end }
 colors = setmetatable({}, { __index = function() return 1 end })
 term = setmetatable({ getSize = function() return 51, 19 end }, { __index = function() return function() end end })
 write = function(s) lastPrompt = tostring(s) end
-print = function(...) end
+printed = {}
+print = function(...) printed[#printed + 1] = table.concat({ ... }, " ") end
 printError = function(e) logs[#logs + 1] = "PRINTERROR " .. tostring(e) end
 
 local function ser(v)
@@ -109,7 +113,18 @@ P("Mechanoo", function(t)
   -- strafing around inside the east side of the base
   return 40 + 10 * math.sin(0.6 * t), 64, 12 * math.cos(0.4 * t)
 end)
-P("FarGuy", function(t) return 0, 64, -250 end)       -- outside ENGAGE_RANGE: never shot
+P("FarGuy", function(t) return 0, 64, -250 end)       -- outside ENGAGE_RANGE: only shot when picked
+
+-- ships (Sable) seen by the radars: centre positions
+local ships = {
+  -- empty drone flying past the north side, 22 m out
+  drone = function(t) return lerp(-150, 150, math.max(0, math.min(1, (t - 10) / 40))), 90, -70 end,
+  -- hostile ship hovering 36 m east of the base with Pilot on deck
+  raider = function(t) return 100 + 3 * math.sin(0.3 * t), 90, 60 end,
+  -- the user's own ship parked inside the base
+  home = function(t) return 0, 72, 30 end,
+}
+P("Pilot", function(t) local x, y, z = ships.raider(t) return x, y + 2, z end)
 mechHits = 0
 
 -- read = how getInfo().yaw relates to the real yaw on each mount
@@ -147,6 +162,7 @@ end
 -- cm0's per-tick yaw steps while following levisnakes in the track test
 yawSteps, aimErrs = {}, {}
 local lastYaw
+shipHits = {}
 local function tick()
   CLOCK = CLOCK + 0.05
   if TRACK and CLOCK > 22 then
@@ -182,6 +198,13 @@ local function tick()
         dead = true
       end
     end
+    for name, fn in pairs(ships) do
+      local x, y, z = fn(CLOCK)
+      if not dead and segDist(ox, oy, oz, s.x, s.y, s.z, x, y, z) < 3 then
+        shipHits[name] = (shipHits[name] or 0) + 1
+        dead = true
+      end
+    end
     if dead then table.remove(shells, i) end
   end
 end
@@ -202,7 +225,26 @@ local per = {
       return { x = x, y = y, z = z, eyeHeight = 1.62 }
     end } },
   modem_0 = { types = { "modem" }, m = {} },
+  -- the radar monitor has getTracks too, but must not count as a radar
+  radar_monitor_0 = { types = { "create_radar:monitor" }, m = {
+    getTracks = function() error("monitor polled as a radar") end, getSelectedTrackId = function() end } },
 }
+local function tracks()
+  local out = {}
+  for name, fn in pairs(ships) do
+    local x, y, z = fn(CLOCK)
+    out[#out + 1] = { id = name, category = "SABLE", entityType = "sable:sub_level", position = { x = x, y = y, z = z } }
+  end
+  for name, pl in pairs(players) do
+    local x, y, z = pl.fn(CLOCK)
+    out[#out + 1] = { id = "p" .. name, category = "PLAYER", position = { x = x, y = y, z = z } }
+  end
+  return out
+end
+for i = 0, 1 do
+  per["plane_radar_" .. i] = { types = { "create_radar:plane_radar" }, m = {
+    getTracks = tracks, getPosition = function() return { x = 0, y = 64, z = 0 } end } }
+end
 for name, m in pairs(mounts) do
   per[name] = { types = { "cannon_mount" }, m = {
     getInfo = function()
@@ -229,6 +271,7 @@ peripheral = {
     return o
   end,
   hasType = function(n, t) for _, x in ipairs(per[n].types) do if x == t then return true end end return false end,
+  getMethods = function(n) local o = {} for k in pairs(per[n].m) do o[#o + 1] = k end return o end,
   call = function(n, meth, ...)
     local f = per[n] and per[n].m[meth]
     if not f then error("No such method " .. tostring(meth)) end
@@ -242,12 +285,23 @@ peripheral = {
 read = function()
   local p = lastPrompt or ""
   if p:find("ARM") then return "ARM" end
+  if ANSWERS and #ANSWERS > 0 then return table.remove(ANSWERS, 1) end
+  -- pick menu: choose the line naming PICK
+  if p == "> " and PICK then
+    for i = #printed, 1, -1 do
+      local n = printed[i]:match("^(%d+)%) " .. PICK)
+      if n then return n end
+    end
+  end
   return ""
 end
 
 local keys = { { 20, "a" } }
 -- track test on, then armed too: must aim at friends but never fire
 if TRACK then keys = { { 15, "k" }, { 20, "a" } } end
+if PICK then keys = { { 20, "a" }, { 22, "p" } } end
+-- settings menu: 9x9 chunks, 20 m engage range, ship mode hostile -> unknown, back
+if SETTINGS then keys = { { 5, "s" } } ANSWERS = { "1", "9", "2", "20", "3", "" } end
 function aimAt(name, who)
   local m, p = mounts[name], players[who]
   local x, _, z = p.fn(CLOCK)
@@ -287,6 +341,7 @@ while CLOCK < END_T do
   end
 end
 yawmap = files["/autocannons/yawmap"]
+savedSettings = files["/autocannons/settings"]
 -- check each learned map turns the reading back into the real yaw
 mapOk = {}
 local map = yawmap and textutils.unserialize(yawmap) or {}
