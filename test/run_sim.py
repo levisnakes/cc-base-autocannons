@@ -51,6 +51,11 @@ print("FIRED", dict(g.fired.items()))
 print("MAPS", g.yawmap, dict(g.mapOk.items()))
 ship_hits = dict(g.shipHits.items())
 print("SHIP HITS", ship_hits)
+ys = sorted(g.missY.values())
+if ys:
+    print(f"HEIGHT at Mechanoo: median {ys[len(ys) // 2]:+.2f} blocks above his chest ({len(ys)} rounds)")
+    if not os.environ.get("PICK"):  # with a pick, rounds near Mechanoo are strays
+        assert abs(ys[len(ys) // 2]) < 0.6, "rounds pass Mechanoo too high/low"
 by = {}
 for t, who, frm in hits:
     by.setdefault((who, frm), []).append(round(t, 1))

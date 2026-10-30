@@ -28,9 +28,12 @@ MIN_RANGE = 8                 -- never fire at anything closer than this to a ca
 NO_FIRE_ZONES = {}            -- boxes shots must not fly through: { {x1, y1, z1, x2, y2, z2}, ... }
 
 -- Autocannon build. CANNON = "steel", "bronze" or "cast_iron"; BARRELS = barrel blocks.
+-- CBC counts a recoil spring as a barrel, so it makes rounds faster too.
 CANNON = "steel"
 BARRELS = 3
-SHOT_SPEED = nil              -- blocks/tick; nil = worked out from CANNON and BARRELS
+RECOIL_SPRING = true          -- true if there's a recoil spring between the breech and the barrels
+PIVOT_HEIGHT = 2.5            -- the cannon turns this far above the mount block (-1.5 for a ceiling mount)
+SHOT_SPEED = nil              -- blocks/tick; nil = worked out from CANNON, BARRELS and RECOIL_SPRING
 PITCH_TRIM = 0                -- degrees added to every shot's pitch (+ = higher)
 YAW_TRIM = 0                  -- degrees added to every shot's yaw
 INVERT_PITCH = false          -- true if the test shot tilts the barrel down instead of up
@@ -57,7 +60,7 @@ do
 end
 
 -- ============================================================ helpers
-local VERSION = "1.4.0"
+local VERSION = "1.5.0"
 local DIR = "/autocannons"
 local LATENCY = 0.05          -- seconds between a new aim reaching the mount and the round leaving
 local CMD_AHEAD = 0.05        -- a new aim reaches the mount one tick after it's sent
@@ -117,7 +120,8 @@ end
 fs.makeDir(DIR)
 
 -- [S] on the computer saves these; they win over the settings at the top
-local SAVED_KEYS = { "BASE_RADIUS_CHUNKS", "ENGAGE_RANGE", "SHIP_TARGETS", "SHIP_CREW_RADIUS", "FOCUS_FIRE" }
+local SAVED_KEYS = { "BASE_RADIUS_CHUNKS", "ENGAGE_RANGE", "SHIP_TARGETS", "SHIP_CREW_RADIUS", "FOCUS_FIRE",
+  "BARRELS", "RECOIL_SPRING", "PITCH_TRIM" }
 do
   local saved = U.load(DIR .. "/settings") or {}
   for _, k in ipairs(SAVED_KEYS) do
@@ -505,7 +509,10 @@ end
 function T.cfg(name)
   local o = TURRETS[name] or {}
   local mat = MATERIALS[o.cannon or CANNON] or MATERIALS.steel
-  local barrels = o.barrels or BARRELS
+  local spring = o.recoilSpring
+  if spring == nil then spring = RECOIL_SPRING end
+  -- the breech is at the pivot; the spring and barrels run forward from it
+  local barrels = (o.barrels or BARRELS) + (spring and 1 or 0)
   local speed = o.speed or SHOT_SPEED or (mat.base + mat.inc * min(barrels, mat.maxInc))
   return { speed = speed, life = o.life or mat.life, barrel = barrels + 0.5,
     minPitch = o.minPitch or -30, maxPitch = o.maxPitch or 60,
@@ -687,7 +694,7 @@ function T.think(t, now, call, fire)
   t.noPower = (info.yawShaftSpeed or 0) == 0 or (info.pitchShaftSpeed or 0) == 0
   if not T.yawMap[t.name] then fire(false) t.needsLearn = true return end
 
-  local px, py, pz = info.x + 0.5, info.y + 1.5, info.z + 0.5
+  local px, py, pz = info.x + 0.5, info.y + PIVOT_HEIGHT, info.z + 0.5
   local chosen, held
   for _, cand in ipairs(T.candidates(t, px, py, pz)) do
     local e = S.predict(cand.e, CMD_AHEAD)
@@ -925,7 +932,7 @@ function UI.testShot()
   T.busy = t.name
   setFire(t, false)
   local i = t.info
-  local px, py, pz = i.x + 0.5, i.y + 1.5, i.z + 0.5
+  local px, py, pz = i.x + 0.5, i.y + PIVOT_HEIGHT, i.z + 0.5
   local yaw, pitch, ticks = Bal.aim(t.c, px, py, pz, { x = x + 0.5, y = y, z = z + 0.5, aimY = 0.5 })
   if not yaw then
     print("Out of reach for this cannon.")
@@ -1021,6 +1028,10 @@ function UI.settings()
     print("8) Yaw test a cannon")
     print("9) Rescan peripherals")
     print("C) Set base centre (stand on the core)")
+    local c1 = T.list[1] and T.list[1].c
+    print(string.format("B) Barrels: %d%s%s", BARRELS, RECOIL_SPRING and " + recoil spring" or ", no spring",
+      c1 and string.format(" (%.1f b/t)", c1.speed) or ""))
+    print(string.format("H) Pitch trim: %+.2f deg (+ = higher)", PITCH_TRIM))
     print("Enter = back")
     local k = UI.ask("> ")
     if k == "" then return end
@@ -1049,6 +1060,14 @@ function UI.settings()
       P.scan()
       T.sync()
     elseif k:lower() == "c" then UI.setCentre()
+    elseif k:lower() == "b" then
+      local n = tonumber(UI.ask("Barrel blocks (not counting breech or spring): "))
+      if n and n >= 1 then BARRELS = floor(n) end
+      RECOIL_SPRING = UI.ask("Recoil spring behind the barrels? (y/n): "):lower():sub(1, 1) == "y"
+      T.sync()
+    elseif k:lower() == "h" then
+      local n = tonumber(UI.ask("Pitch trim in degrees (shots high: try -0.5): "))
+      if n then PITCH_TRIM = n T.sync() end
     end
     saveSettings()
     for _, e in pairs(S.players) do e.edge = B.edge(e.x, e.z) end

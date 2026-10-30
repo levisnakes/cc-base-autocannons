@@ -137,14 +137,16 @@ for name, m in pairs(mounts) do
   m.yaw, m.pitch, m.ty, m.tp, m.fire, m.cc, m.asm, m.cool = 0, 0, 0, 0, false, false, false, 0
   fired[name] = 0
 end
-local SPEED, LIFE, BARREL, DRAG, G = 7.5, 60, 3.5, 0.01, 0.025
+-- like CBC: steel, recoil spring + 3 barrels (the spring counts as a barrel: 3 + 1.5 * 4 = 9 b/t),
+-- the cannon pivots on the block 2 above the mount, muzzle 4.5 blocks out
+local SPEED, LIFE, BARREL, DRAG, G = 9, 60, 4.5, 0.01, 0.025
 local shells = {}
 local function spawnShell(name, m)
   local cp = math.cos(math.rad(m.pitch))
   local dx, dy, dz = -math.sin(math.rad(m.yaw)) * cp, math.sin(math.rad(m.pitch)), math.cos(math.rad(m.yaw)) * cp
   local s = math.rad(0.4)                              -- a little spread
   dx, dy, dz = dx + (math.random() - 0.5) * s, dy + (math.random() - 0.5) * s, dz + (math.random() - 0.5) * s
-  local px, py, pz = m.x + 0.5, m.y + 1.5, m.z + 0.5
+  local px, py, pz = m.x + 0.5, m.y + 2.5, m.z + 0.5
   shells[#shells + 1] = { x = px + dx * BARREL, y = py + dy * BARREL, z = pz + dz * BARREL,
     vx = dx * SPEED, vy = dy * SPEED, vz = dz * SPEED, life = LIFE, from = name }
   fired[name] = fired[name] + 1
@@ -162,7 +164,7 @@ end
 -- cm0's per-tick yaw steps while following levisnakes in the track test
 yawSteps, aimErrs = {}, {}
 local lastYaw
-shipHits = {}
+shipHits, missY = {}, {}
 local function tick()
   CLOCK = CLOCK + 0.05
   if TRACK and CLOCK > 22 then
@@ -205,6 +207,12 @@ local function tick()
         dead = true
       end
     end
+    if s.from ~= "enemy" then
+      local x, y, z = players.Mechanoo.fn(CLOCK)
+      local h2 = (s.x - x) ^ 2 + (s.z - z) ^ 2
+      if h2 < 4 and (not s.best or h2 < s.best) then s.best, s.dy = h2, s.y - (y + 0.9) end
+    end
+    if (dead or s.life <= 0) and s.dy then missY[#missY + 1] = s.dy s.dy = nil end
     if dead then table.remove(shells, i) end
   end
 end

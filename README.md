@@ -26,10 +26,11 @@ wget https://raw.githubusercontent.com/levisnakes/cc-base-autocannons/main/autoc
 | `SHIP_CREW_RADIUS` | players this close to a ship's centre count as on board |
 | `SHIP_CLEAR` | hold fire if a shot would pass this close to one of your ships |
 | `ALLOWED`, `ALLIES` | never shot; more allies can be added in-game with **F** |
-| `CANNON`, `BARRELS` | `"steel"` / `"bronze"` / `"cast_iron"` and barrel count; this sets the round speed |
+| `CANNON`, `BARRELS`, `RECOIL_SPRING` | `"steel"` / `"bronze"` / `"cast_iron"`, barrel count, and whether there's a recoil spring (CBC counts it as a barrel); this sets the round speed (also in **S** > B) |
+| `PIVOT_HEIGHT` | the cannon turns on the block 2 above the mount (2.5); use -1.5 for a ceiling mount |
 | `FOCUS_FIRE` | `false` spreads cannons over several targets, `true` puts them all on one |
 | `NO_FIRE_ZONES` | boxes shots must never fly through (your own buildings) |
-| `PITCH_TRIM`, `YAW_TRIM`, `INVERT_PITCH` | fixes if the test shot lands off |
+| `PITCH_TRIM`, `YAW_TRIM`, `INVERT_PITCH` | fixes if the test shot lands off (pitch trim is also in **S** > H) |
 
 ## Keys
 
